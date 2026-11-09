@@ -39,7 +39,145 @@
 <!-- The path a submission takes, from arriving to the label a reader sees.
      Six or seven steps — this is the trace you wrote in Milestone 1. -->
 
+Provenance Guard reads a piece of writing and says, in plain words, whether it
+looks machine-written, human-written, or too close to call. It also gives the
+writer a way to push back when it gets that wrong.
 
+**Stretch feature I'm adding:** `GET /content/<content_id>`, which returns one
+item's current status and any appeals, so a writer can check where their
+appeal stands.
+
+### The path a submission takes
+
+1. **It arrives at `POST /submit`** (`app.py::submit`) as JSON:
+   `{"text": ..., "creator_id": ...}`. The route checks the input before
+   anything else runs: the body must be a JSON object, `text` a string of at
+   least 20 words and at most 20,000 characters, and `creator_id` a non-empty
+   string. Anything else is refused with a 400 (413 for too long) that names
+   the field, and the refusal is written to the audit log
+   (`audit.log_rejection`), so a flood of bad requests still leaves a trace.
+   *Adds: both signals are guaranteed real text.*
+2. **It gets a `content_id`**, a random UUID. *Adds: the handle that the appeal
+   and the status lookup refer back to.*
+3. **Signal one reads it.** `detector.model_signal(text)` runs GPT-2 locally,
+   measures how predictable the first ~400 tokens are (perplexity), and maps
+   that to a 0–1 `model_score`, where higher means more machine-like. *Adds: a
+   judgement about the wording.*
+4. **Signal two measures it.** `stylometry.style_signal(text)` uses no model.
+   It measures sentence-length variation, vocabulary variety and punctuation
+   and maps them to a 0–1 `style_score`, where higher means more machine-like.
+   *Adds: a judgement about the shape, made independently of the first.*
+5. **The two are combined.** `scoring.combine_signals(model_score,
+   style_score)` returns `confidence`, from 0 (confidently human) to 1
+   (confidently AI). When the signals disagree, the score is pulled toward the
+   middle, because two methods disagreeing is uncertainty. *Adds: one number,
+   and the decision about how far to trust a lone signal.*
+6. **The number becomes words.** `scoring.score_to_label(confidence)` returns
+   a `guess` (`ai` / `human` / `unsure`) and the full sentence a reader sees.
+   *Adds: something a person can understand and act on.*
+7. **It's logged, then answered.** `audit.log_decision(...)` appends one JSON
+   line to `logs/audit.jsonl` with all nine fields: timestamp, content_id,
+   creator_id, guess, model_score, style_score, combined_score, label and
+   status (`decided`). The same facts go back to the caller as JSON. *Adds: a
+   permanent record an appeal can attach to.*
+
+**If the writer disagrees,** they send `POST /appeal` (`app.py::appeal`) with
+the `content_id` and their reasoning. The route looks the id up in the log. An
+unknown id gets a 404, never a silent success. It then appends an appeal entry
+beside the original decision with status `under_review` (`audit.log_appeal`;
+nothing is overwritten) and confirms. Nothing is re-scored automatically: the
+item waits for a person.
+
+### The contract
+
+**`POST /submit`**
+
+| Request field | Type | Rule |
+|---|---|---|
+| `text` | string | Required. At least 20 words after trimming, at most 20,000 characters |
+| `creator_id` | string | Required. 1–100 characters after trimming |
+
+| Response field (200) | Type | Meaning |
+|---|---|---|
+| `content_id` | string | UUID for this submission. Needed to appeal |
+| `creator_id` | string | Echoed back |
+| `guess` | string | `"ai"`, `"human"` or `"unsure"` |
+| `confidence` | float, 0–1 | The combined score: 0 = confidently human, 1 = confidently AI. The log calls the same number `combined_score` |
+| `label` | string | The full sentence a reader sees |
+| `model_score` | float, 0–1 | Signal one alone. Higher = more AI-like |
+| `style_score` | float, 0–1 | Signal two alone. Higher = more AI-like |
+| `status` | string | `"decided"` |
+
+Errors:
+
+- `400 {"error": "invalid_input", "field": ..., "message": ...}`: the body
+  isn't a JSON object, a field is missing, blank or not a string, or the text
+  is under 20 words.
+- `413 {"error": "text_too_long", ...}`: the text is over 20,000 characters.
+
+Every refusal is logged with `status: "rejected"`.
+
+**`POST /appeal`**
+
+| Request field | Type | Rule |
+|---|---|---|
+| `content_id` | string | Required. Must match a submission in the log |
+| `reasoning` | string | Required. 1–5,000 characters after trimming |
+
+| Response field (200) | Type | Meaning |
+|---|---|---|
+| `content_id` | string | Echoed back |
+| `status` | string | `"under_review"` |
+| `message` | string | Plain-English confirmation for the writer |
+| `appeal_count` | int | Appeals recorded on this item, including this one |
+| `original_decision` | object | `guess`, `confidence` and `label` as first decided. Never changed |
+
+Errors:
+
+- `400 invalid_input`: a field is missing, blank or not a string.
+- `404 {"error": "not_found", ...}`: the content_id was never issued.
+
+A second appeal on the same item is recorded too, and the status stays
+`under_review`.
+
+**`GET /content/<content_id>`** (stretch) returns `content_id`, `creator_id`,
+`status`, `guess`, `confidence`, `label`, `model_score`, `style_score`,
+`decided_at` and `appeals` (a list of `{timestamp, reasoning}`). An unknown id
+gets a 404.
+
+### Following a false positive through
+
+A writer who learned English as a second language submits 180 words about
+their first winter in a new city. They use short sentences and common words
+they're sure of, and every word is theirs.
+
+- **Signal one** finds the text easy to predict, because plain, common words
+  are exactly what GPT-2 predicts well. I expect their `model_score` to come
+  back high, around 0.7–0.8. That's the structural blind spot, not a bug.
+- **Signal two is their only protection.** If their sentence lengths vary and
+  their punctuation is their own, `style_score` lands mid-range or lower. The
+  signals then disagree, and the combining rule pulls the score toward the
+  middle, so the label is **unsure** rather than an accusation. If they also
+  write in very even, short sentences, both signals agree and they can land on
+  **likely AI**. That's the false positive.
+- **What the label says to them:** never "you used AI". The AI label says what
+  was measured, that the measurement can be wrong (plain and second-language
+  writing are named as the known case), and how to appeal.
+- **What they can do:** `POST /appeal` with their `content_id` and their
+  reasons. The item moves to `under_review`, the appeal sits next to the
+  original decision in the log, and `GET /content/<id>` shows them the status.
+
+**What this decides:**
+
+1. One signal alone is never enough for the AI label. Disagreement goes to
+   "unsure".
+2. The AI threshold sits further from the middle than the human threshold,
+   because accusing this writer costs more than missing a machine-written
+   paragraph.
+3. The AI label's text names the appeal.
+
+Milestone 4 checks the expected scores above against a real plain-writing
+sample.
 
 ---
 
@@ -53,19 +191,43 @@
 
 ### Signal one — the model signal
 
-**What it measures:**
+**What it measures:** How predictable the text is to GPT-2: its perplexity
+over the first ~400 tokens (about 300 words), mapped onto 0–1 so that low
+perplexity (easy to predict) gives a high score. `detector.py::model_signal`.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** A language model
+writes by repeatedly choosing a likely next word, so its output sits where a
+model expects it, which means low perplexity. People make odd, specific
+choices, like a rare word or an abrupt turn, that a model fails to predict.
 
-**What it can't see:**
+**What it can't see:** Who wrote it. Predictability isn't authorship. Plain
+writing is predictable, so it scores machine-like: a second-language writer
+sticking to words they're sure of, a younger writer, someone writing simply on
+purpose, or a formulaic genre like instructions. It fails the other way too.
+AI text pushed toward rare words, by a paraphrasing tool or a "use unusual
+vocabulary" prompt, scores human. And it only reads the first ~400 tokens, so
+anything after that is invisible to it. AI text placed under a human-written
+opening paragraph would get past it.
 
 ### Signal two — the style signal
 
-**What it measures:**
+**What it measures:** The shape of the text, with no model and no idea what it
+says (`stylometry.py::style_signal`): how much sentence length varies, how
+varied the vocabulary is, and how much punctuation is used and of what kinds.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** Generated prose tends
+toward even, mid-length sentences, a narrower vocabulary and regular
+punctuation, because "most likely next word" produces the average case. People
+are lumpier: a three-word sentence beside a forty-word one, a dash, a
+question.
 
-**What it can't see:**
+**What it can't see:** Meaning. Anything that changes the shape without
+changing the substance moves it, and all of it is cheap to do on purpose:
+typos, chopping sentences up or gluing them together, sprinkling in dashes or
+semicolons, a pasted quotation. It's also unstable on short texts, because
+one or two sentences have no meaningful spread. And it's genre-blind: a
+recipe, a list or a poem has an unusual shape for reasons unrelated to who
+wrote it.
 
 ### The combining rule
 
