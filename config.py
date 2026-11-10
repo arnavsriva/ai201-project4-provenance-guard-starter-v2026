@@ -70,41 +70,45 @@ MAX_BODY_BYTES = 1_000_000
 
 
 # ─── Scoring (Milestone 4) ───────────────────────────────────────────────────
-# How much each signal counts toward the combined score.
-#
-# ⚠️ These are placeholders. Milestone 4 asks you to write your combining rule
-# down BEFORE you code it, and to put the numbers in your README. Whatever you
-# decide, it goes here.
+# The rule is in scoring.py::combine_signals; its numbers are here. README.md →
+# "Signals and Scoring" explains both.
 
-WEIGHT_MODEL_SIGNAL = 0.5
-WEIGHT_STYLE_SIGNAL = 0.5
+WEIGHT_MODEL_SIGNAL = 0.6
+WEIGHT_STYLE_SIGNAL = 0.4
+
+# How hard disagreement between the two signals pulls the combined score back
+# toward 0.5. 0.0 is no pull at all — a plain weighted average.
+#
+# ⚠️ Keep it at or below 2 × the smaller weight (weights normalised to sum to
+# 1). Above that the rule stops being monotone: raising one signal can LOWER
+# the score slightly, which right at a threshold flips the label the wrong way
+# (model 0.41 + style 0.00 → unsure, but style 0.02 → human). With 0.6 / 0.4
+# the ceiling is 0.8. test_service.py checks this.
+DISAGREEMENT_PULL = 0.8
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
 # Where one label becomes another. Scores run 0.0 (confidently human) to 1.0
 # (confidently AI).
 #
-#   score < HUMAN_THRESHOLD          -> high-confidence human
-#   between the two                  -> unsure
-#   score > AI_THRESHOLD             -> high-confidence AI
+#   score <= HUMAN_THRESHOLD          -> high-confidence human
+#   between the two                   -> unsure
+#   score >= AI_THRESHOLD             -> high-confidence AI
 #
-# ⚠️ This is where your false-positive decision from Milestone 1 actually gets
-# made. Widening the unsure band means fewer wrong accusations and more AI text
+# ⚠️ This is where the false-positive decision from Milestone 1 gets made.
+# Widening the unsure band means fewer wrong accusations and more AI text
 # getting through. There is no setting that avoids the trade — only settings
 # that decide who pays for it.
+#
+# The AI threshold sits further from 0.5 than the human one on purpose:
+# calling a real writer's work AI costs them far more than missing some AI
+# text costs anyone else.
 
 HUMAN_THRESHOLD = 0.35
-AI_THRESHOLD = 0.65
+AI_THRESHOLD = 0.70
 
-# ⚠️ One thing that catches people out in Milestone 5. A weighted average can
-# only land between its two inputs — so while `style_signal` is still the stub
-# returning 0.5, the combined score can never leave 0.25–0.75 no matter what
-# the model signal says, and the human label needs a model score below 0.20 to
-# be reachable at all.
-#
-# If a label you can't reach is the problem, the fix is upstream of the
-# thresholds: a style signal that actually varies. `scoring.label_ranges()`
-# prints the bands; the reachable range is a different question.
+# The disagreement pull means the AI label is only reachable when BOTH signals
+# lean AI — that's the point of it. `python scoring.py` prints the bands.
 
 
 # ─── Rate limiting (UNIT 8) ──────────────────────────────────────────────────
