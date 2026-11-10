@@ -81,9 +81,10 @@ WEIGHT_STYLE_SIGNAL = 0.4
 #
 # ⚠️ Keep it at or below 2 × the smaller weight (weights normalised to sum to
 # 1). Above that the rule stops being monotone: raising one signal can LOWER
-# the score slightly, which right at a threshold flips the label the wrong way
-# (model 0.41 + style 0.00 → unsure, but style 0.02 → human). With 0.6 / 0.4
-# the ceiling is 0.8. test_service.py checks this.
+# the score slightly, which right at a threshold flips the label the wrong way.
+# At pull 1.0 with the human threshold at 0.35: model 0.41 + style 0.00 gave
+# unsure, but style 0.02 gave human. With 0.6 / 0.4 the ceiling is 0.8, and
+# test_service.py checks it.
 DISAGREEMENT_PULL = 0.8
 
 
