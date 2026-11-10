@@ -111,9 +111,13 @@ item waits for a person.
 Errors:
 
 - `400 {"error": "invalid_input", "field": ..., "message": ...}`: the body
-  isn't a JSON object, a field is missing, blank or not a string, or the text
-  is under 20 words.
+  isn't a JSON object, a field is missing, blank or not a string, the text
+  is under 20 words, or `creator_id` is over 100 characters.
 - `413 {"error": "text_too_long", ...}`: the text is over 20,000 characters.
+  A whole request body over 1 MB gets `413 {"error": "body_too_large", ...}`
+  before the route even reads it.
+- `503 {"error": "detector_unavailable", ...}`: the model couldn't load.
+  Nothing is decided and nothing is labelled.
 
 Every refusal is logged with `status: "rejected"`.
 
@@ -130,12 +134,16 @@ Every refusal is logged with `status: "rejected"`.
 | `status` | string | `"under_review"` |
 | `message` | string | Plain-English confirmation for the writer |
 | `appeal_count` | int | Appeals recorded on this item, including this one |
-| `original_decision` | object | `guess`, `confidence` and `label` as first decided. Never changed |
+| `original_decision` | object | `guess`, `confidence`, `label` and `decided_at` from the first decision. Never changed |
 
 Errors:
 
-- `400 invalid_input`: a field is missing, blank or not a string.
+- `400 invalid_input`: a field is missing, blank or not a string, or
+  `reasoning` is over 5,000 characters.
 - `404 {"error": "not_found", ...}`: the content_id was never issued.
+
+A refused appeal is logged too, under `attempted_content_id`, so a mistyped
+id never shows up in a real item's history.
 
 A second appeal on the same item is recorded too, and the status stays
 `under_review`.

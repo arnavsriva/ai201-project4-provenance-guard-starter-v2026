@@ -10,28 +10,40 @@ Then, in another terminal:
       -H "Content-Type: application/json" \
       -d '{"message": "hello"}'
 
-That's the example route. It works right now, before you've written anything.
-**Leave it alone** — it's your control. When something breaks later, check that
-`/ping` still answers: if it does, the problem is in your handler; if it
-doesn't, it's the service itself.
+That's the example route. **Leave it alone** — it's your control. When
+something breaks later, check that `/ping` still answers: if it does, the
+problem is in a handler; if it doesn't, it's the service itself.
 
 Routes:
 
-    POST /ping        the worked example. Already works. Don't edit it
-    POST /submit      ← YOU BUILD THIS (Milestone 3, 4, 5)
-    POST /appeal      ← YOU BUILD THIS (Milestone 5)
-    GET  /log         the audit log. Already works
-    GET  /health      is the service up, and is the model loaded
+    POST /ping                the worked example. Don't edit it
+    POST /submit              score a piece of writing, label it, log it
+    POST /appeal              a writer disputes a decision → under_review
+    GET  /content/<id>        one item's current status and appeals (stretch)
+    GET  /log                 the audit log
+    GET  /health              is the service up, and is the model loaded
+
+Every field and every error of /submit and /appeal is written down in
+README.md under "The contract".
 """
 
 import uuid
 
 from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 import audit
 import config
+import detector
+import scoring
+import stylometry
 
 app = Flask(__name__)
+
+# A body bigger than this never reaches a route: Flask raises 413 while reading
+# it, and `body_too_large` below answers. Real submissions are capped far lower
+# by config.MAX_TEXT_CHARS; this only stops a giant body being parsed at all.
+app.config["MAX_CONTENT_LENGTH"] = config.MAX_BODY_BYTES
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -148,98 +160,305 @@ def health():
     })
 
 
-# ── YOU BUILD THIS ────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _refuse(field, reason, message, *, creator_id="unknown", status=400,
+            error="invalid_input", **extra):
+    """
+    Turn a bad request away with a 4xx that names the field — and log it.
+
+    `error` is what the caller sees (the contract's codes); `reason` is the
+    precise cause, which only the log needs. A refusal that left no log entry
+    would make a flood of malformed requests look like a quiet afternoon.
+    """
+    audit.log_rejection(
+        creator_id=creator_id,
+        reason=reason,
+        field=field,
+        http_status=status,
+        path=request.path,
+        **extra,
+    )
+    return jsonify({"error": error, "field": field, "message": message}), status
+
+
+def _decision_in(entries: list[dict]) -> dict | None:
+    """
+    The original decision among one item's log entries.
+
+    Decisions are the entries with no `event`; appeals carry
+    `event: "appeal"` and refusals `event: "rejected"`. Matching on that,
+    rather than taking the first entry, means a stray entry can't pass
+    itself off as the decision.
+    """
+    for entry in entries:
+        if entry.get("event") is None and "guess" in entry:
+            return entry
+    return None
+
+
+def _not_found(content_id: str):
+    return jsonify({
+        "error": "not_found",
+        "message": (f"No submission has the content_id {content_id!r}. Check it "
+                    f"against the content_id that /submit returned."),
+    }), 404
+
+
+# ── Submitting ────────────────────────────────────────────────────────────────
 
 @app.post("/submit")
 # @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
-    ← TODO — Milestones 3, 4 and 5
 
     Expects JSON:
         {"text": "...", "creator_id": "..."}
 
-    Should return JSON with, at minimum:
-        {"content_id": "...", "guess": "...", "confidence": 0.0, "label": "...",
-         "model_score": 0.0, "style_score": 0.0}
+    Returns JSON:
+        {"content_id", "creator_id", "guess", "confidence", "label",
+         "model_score", "style_score", "status"}
 
-    ⚠️ **Both signal scores go in the response, not just the log.** Unit 8's
+    Both signal scores go in the response as well as the log: unit 8's
     `run_attacks.py` and `run_eval.py` read `model_score` and `style_score`
-    straight off this response and put them in your reports. Leave them out and
-    every row of next unit's evidence says `null` — which is exactly the
-    diagnostic you need to name a stage and a mechanism. You do not want to
-    find that out after running the attack set.
+    straight off it.
 
-    ─────────────────────────────────────────────────────────────────────────
-    Build it in three passes. Do not skip ahead — the ordering is how you tell
-    a broken route from a broken signal.
-
-    **Milestone 3 — the route answers.**
-      1. Return a hardcoded response. Confirm `curl` gets it back before you
-         add any logic at all.
-      2. Then pull `text` and `creator_id` out of the payload.
-      3. Then call ONE signal — `detector.model_signal(text)` — and put the
-         real number in. Leave confidence and label as placeholders.
-      4. Log every submission with `audit.log_decision(...)`. The content_id
-         matters: `/appeal` needs it, and a student who skips it rebuilds this
-         whole flow later.
-
-    **Milestone 4 — the second signal and the score.**
-      5. Add `stylometry.style_signal(text)`.
-      6. Combine them with `scoring.combine_signals(...)`.
-      7. Log BOTH signal scores alongside the combined one, and put them in the
-         response too. Next unit you can't diagnose anything without them.
-
-    **Milestone 5 — the label.**
-      8. `scoring.score_to_label(...)` and put the real label in the response.
-
-    ─────────────────────────────────────────────────────────────────────────
-    Worth deciding early, because unit 8's attack set will decide it for you:
-    what should this do when `text` is missing, empty, or enormous? A crash on
-    a malformed input is one of the most common real failures there is.
+    Bad input never reaches the signals. Missing, blank or non-string fields
+    and too-short text get a 400; too-long text a 413. Every refusal is logged.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _refuse(
+            "body", "body_not_json_object",
+            'Send a JSON object like {"text": "...", "creator_id": "..."}, '
+            "with the header Content-Type: application/json.",
+            content_type=request.content_type,
+        )
 
-    # TODO: delete this and build the route.
+    creator_id = payload.get("creator_id")
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return _refuse(
+            "creator_id", "creator_id_missing",
+            "creator_id is required: a non-empty string saying who wrote this.",
+        )
+    creator_id = creator_id.strip()
+    if len(creator_id) > config.MAX_CREATOR_ID_CHARS:
+        return _refuse(
+            "creator_id", "creator_id_too_long",
+            f"creator_id can be at most {config.MAX_CREATOR_ID_CHARS} characters.",
+            creator_id=creator_id[:config.MAX_CREATOR_ID_CHARS],
+        )
+
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _refuse(
+            "text", "text_missing",
+            "text is required: a non-empty string holding the writing to check.",
+            creator_id=creator_id,
+        )
+    text = text.strip()
+    if len(text) > config.MAX_TEXT_CHARS:
+        return _refuse(
+            "text", "text_too_long",
+            f"This is {len(text):,} characters and the limit is "
+            f"{config.MAX_TEXT_CHARS:,}. Send a shorter excerpt.",
+            creator_id=creator_id, status=413, error="text_too_long",
+            text_chars=len(text),
+        )
+    word_count = len(stylometry.words(text))
+    if word_count < config.MIN_WORDS:
+        return _refuse(
+            "text", "text_too_short",
+            f"This is {word_count} words, which is too short to check. We need "
+            f"at least {config.MIN_WORDS} words of English text.",
+            creator_id=creator_id, word_count=word_count,
+        )
+
+    content_id = str(uuid.uuid4())
+
+    # Signal one — the model. ~10 s on the first call while gpt2 loads, then a
+    # second or two.
+    try:
+        model_score = detector.model_signal(text)
+    except detector.DetectorUnavailable as exc:
+        audit.log_rejection(creator_id=creator_id, reason="detector_unavailable",
+                            detail=str(exc)[:300], path=request.path)
+        return jsonify({
+            "error": "detector_unavailable",
+            "message": "The checker isn't available right now, so nothing was "
+                       "decided about this text. Try again shortly.",
+        }), 503
+    except ValueError:
+        # Fewer than three tokens for the model. MIN_WORDS should make this
+        # unreachable — if it ever isn't, it's still a 400, not a crash.
+        return _refuse(
+            "text", "text_too_short_for_model",
+            f"This is too short to check. We need at least {config.MIN_WORDS} "
+            f"words of English text.",
+            creator_id=creator_id, word_count=word_count,
+        )
+
+    # Signal two — the shape of the text. No model; instant.
+    style_score = stylometry.style_signal(text)
+
+    confidence = scoring.combine_signals(model_score, style_score)
+    guess, label = scoring.score_to_label(confidence)
+
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=confidence,
+        label=label,
+        status="decided",
+        word_count=word_count,
+        style_parts=stylometry.style_parts(text),
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "creator_id": creator_id,
+        "guess": guess,
+        "confidence": confidence,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "status": "decided",
+    })
+
+
+# ── Appealing ─────────────────────────────────────────────────────────────────
+
+APPEAL_RECORDED = (
+    "Thank you. Your appeal is recorded and this piece is now under review. "
+    "The original decision and your reasons are kept side by side for the "
+    "person who reviews it, and the decision isn't final while that review "
+    "is open."
+)
+
+APPEAL_ADDED = (
+    "Thank you. This piece was already under review, and your new reasons "
+    "have been added beside the earlier ones."
+)
 
 
 @app.post("/appeal")
 def appeal():
     """
-    A writer says you got it wrong. ← TODO — Milestone 5
+    A writer says the decision is wrong.
 
     Expects JSON:
         {"content_id": "...", "reasoning": "..."}
 
-    Should:
-      1. Check the content_id actually exists — `audit.entries_for(id)` tells
-         you. A typo here fails silently and looks like a broken endpoint,
-         which is the single most common way this milestone eats an hour.
-      2. Record the appeal with `audit.log_appeal(...)`, which moves the item
-         to `under_review`.
-      3. Confirm to the writer. No automatic re-checking needed.
+    Checks the content_id belongs to a real decision (an unknown id is a 404,
+    never a silent success), appends the appeal beside the original decision
+    with `audit.log_appeal` — which moves the item to `under_review` without
+    overwriting anything — and confirms. Nothing is re-scored.
 
     This is the smallest endpoint in the project and the one that matters most
-    to the person on the other end. It's the only thing standing between a
-    wrong accusation and nothing at all.
+    to the person on the other end: it's all that stands between a wrong
+    accusation and nothing at all.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _refuse(
+            "body", "body_not_json_object",
+            'Send a JSON object like {"content_id": "...", "reasoning": "..."}, '
+            "with the header Content-Type: application/json.",
+            content_type=request.content_type,
+        )
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    if not isinstance(content_id, str) or not content_id.strip():
+        return _refuse(
+            "content_id", "content_id_missing",
+            "content_id is required: the id that /submit gave back.",
+        )
+    content_id = content_id.strip()
+
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return _refuse(
+            "reasoning", "reasoning_missing",
+            "reasoning is required: say, in your own words, why the decision "
+            "is wrong.",
+            attempted_content_id=content_id,
+        )
+    reasoning = reasoning.strip()
+    if len(reasoning) > config.MAX_REASONING_CHARS:
+        return _refuse(
+            "reasoning", "reasoning_too_long",
+            f"reasoning can be at most {config.MAX_REASONING_CHARS:,} characters.",
+            attempted_content_id=content_id,
+        )
+
+    entries = audit.entries_for(content_id)
+    decision = _decision_in(entries)
+    if decision is None:
+        # Logged under a different key on purpose, so a mistyped id can never
+        # appear in a real item's history.
+        audit.log_rejection(creator_id="unknown", reason="appeal_unknown_content_id",
+                            attempted_content_id=content_id, path=request.path)
+        return _not_found(content_id)
+
+    earlier_appeals = sum(1 for e in entries if e.get("event") == "appeal")
+    audit.log_appeal(
+        content_id=content_id,
+        creator_id=decision.get("creator_id", "unknown"),
+        reasoning=reasoning,
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "content_id": content_id,
+        "status": "under_review",
+        "message": APPEAL_ADDED if earlier_appeals else APPEAL_RECORDED,
+        "appeal_count": earlier_appeals + 1,
+        "original_decision": {
+            "guess": decision.get("guess"),
+            "confidence": decision.get("combined_score"),
+            "label": decision.get("label"),
+            "decided_at": decision.get("timestamp"),
+        },
+    })
+
+
+# ── Stretch: one item's status ────────────────────────────────────────────────
+
+@app.get("/content/<content_id>")
+def content_status(content_id):
+    """
+    Where one submission stands now: its decision, its current status, and
+    every appeal against it, oldest first.
+
+        curl http://127.0.0.1:5000/content/<content_id>
+
+    The status is whatever the item's latest decision-or-appeal entry says,
+    so it follows the append-only log rather than a second copy of the truth.
+    """
+    entries = audit.entries_for(content_id)
+    decision = _decision_in(entries)
+    if decision is None:
+        return _not_found(content_id)
+
+    history = [e for e in entries if e.get("event") in (None, "appeal")]
+    appeals = [e for e in history if e.get("event") == "appeal"]
+
+    return jsonify({
+        "content_id": content_id,
+        "creator_id": decision.get("creator_id"),
+        "status": history[-1].get("status"),
+        "guess": decision.get("guess"),
+        "confidence": decision.get("combined_score"),
+        "label": decision.get("label"),
+        "model_score": decision.get("model_score"),
+        "style_score": decision.get("style_score"),
+        "decided_at": decision.get("timestamp"),
+        "appeals": [{"timestamp": a.get("timestamp"), "reasoning": a.get("reasoning")}
+                    for a in appeals],
+    })
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
@@ -257,6 +476,29 @@ def get_log():
     limit = request.args.get("limit", type=int)
     entries = audit.read_entries(limit=limit)
     return jsonify({"count": len(entries), "entries": entries})
+
+
+# ── Errors as JSON ────────────────────────────────────────────────────────────
+
+@app.errorhandler(413)
+def body_too_large(exc):
+    """A body over MAX_BODY_BYTES. Logged like any other refusal."""
+    audit.log_rejection(creator_id="unknown", reason="body_too_large",
+                        http_status=413, path=request.path)
+    return jsonify({
+        "error": "body_too_large",
+        "message": f"Request bodies are limited to {config.MAX_BODY_BYTES:,} bytes.",
+    }), 413
+
+
+@app.errorhandler(HTTPException)
+def http_error_as_json(exc):
+    """
+    Any other HTTP error — a 404 for a mistyped path, a 405 for GET /submit —
+    as JSON instead of an HTML page, so every caller can parse every answer.
+    """
+    name = (exc.name or "error").lower().replace(" ", "_")
+    return jsonify({"error": name, "message": exc.description}), exc.code
 
 
 def main():

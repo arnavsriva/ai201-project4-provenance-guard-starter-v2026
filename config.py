@@ -47,6 +47,28 @@ DETECTOR_MODEL = os.getenv("AI201_DETECTOR_MODEL", "gpt2")
 DETECTOR_MAX_TOKENS = 400
 
 
+# ─── What /submit and /appeal accept (Milestone 3) ───────────────────────────
+# README.md → "The contract" quotes these numbers. Change one here, change it
+# there too.
+#
+# MIN_WORDS — below this, neither signal means anything: perplexity over a
+# dozen tokens is mostly noise, and one or two sentences have no spread to
+# measure. Too-short text is refused with a 400, which is kinder to a writer
+# than a confident-sounding label built on nothing.
+#
+# MAX_TEXT_CHARS — the model only reads the first ~400 tokens anyway, and
+# 20,000 characters (~3,500 words) is a long essay. Past that, someone is
+# testing the service rather than submitting writing.
+
+MIN_WORDS = 20
+MAX_TEXT_CHARS = 20_000
+MAX_CREATOR_ID_CHARS = 100
+MAX_REASONING_CHARS = 5_000
+
+# A request body bigger than this is refused before any route parses it.
+MAX_BODY_BYTES = 1_000_000
+
+
 # ─── Scoring (Milestone 4) ───────────────────────────────────────────────────
 # How much each signal counts toward the combined score.
 #
