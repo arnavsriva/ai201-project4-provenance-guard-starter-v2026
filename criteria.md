@@ -42,63 +42,94 @@ Two things worth knowing before you pick numbers:
   a **miss**.
 
 ---
-## 1.
 
-<!-- Your criterion. It must name a number. -->
+> **Status: first draft.** Claude Code drafted these five at my request on
+> 2026-11-09, before any real text had been scored. README → How I Used AI
+> says so. Next step: rewrite each one in my own words, and check I'd defend
+> every number.
 
+## 1. My own writing is almost never called AI
 
+Of 10 pieces I wrote myself, each 100–300 words, unedited and never run
+through an AI tool, with at least 3 of them deliberately plain (short
+sentences, everyday words), **at most 1 is labelled high-confidence AI**. This
+has to hold in each of three trials.
 
-**Why this target:**
-
-
-
----
-
-## 2.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** On a writing site, a wrong accusation costs the writer
+far more than a missed AI paragraph costs anyone, so this is the number that
+matters most. One in ten is already more than I'd want to explain to the
+person it happens to. Zero is a promise a 2019 language model can't keep for
+plain writing, and that's exactly why plain pieces are in the set rather than
+left out to make the number easier.
 
 ---
 
-## 3.
+## 2. AI and human text score clearly apart
 
-<!-- Your criterion. -->
+Take 5 AI-generated texts and 5 human-written texts that were **not** used to
+set the weights or thresholds. The AI texts' average combined score is **at
+least 0.30 higher** than the human texts' average, in each of three trials.
 
-
-
-**Why this target:**
-
-
-
----
-
-## 4.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** If the two averages are closer together than the unsure
+band is wide (currently 0.35), a typical AI text and a typical human text can
+both land in "unsure", and the labels stop meaning anything. 0.30 asks for
+nearly that much separation, on texts the system was never tuned on.
 
 ---
 
-## 5.
+## 3. Every label is reachable, and none is crossed
 
-<!-- Your criterion. -->
+Use a 9-text set: 3 clearly AI, 3 clearly human, and 3 AI texts I've lightly
+edited by hand. In every trial, **each of the three labels appears at least
+once**, and **no text gets the opposite confident label**: no clearly-human
+text is labelled high-confidence AI, and no clearly-AI text is labelled
+high-confidence human.
 
+**Why this target:** A label nothing can reach is a gap in the ranges, not a
+design. The crossed-label rule is the stronger half. "Unsure" is an honest
+answer to a hard case, but a confident label pointing the wrong way is the
+system being sure and wrong, and that's the failure that hurts people.
 
+---
 
-**Why this target:**
+## 4. An appeal is always recorded and always changes the status
 
+Submit 5 texts and appeal each one with its real content_id. All **5 of 5**
+appeals get a 200 with status `under_review`. Afterwards,
+`GET /content/<id>` reports `under_review` with the appeal's reasoning, and
+`GET /log` shows the original decision unchanged with the appeal entry after
+it. An appeal with a made-up content_id gets a 404 **5 of 5 times** and adds
+nothing to any real item's history.
 
+**Why this target:** The appeal is the only thing standing between a wrongly
+accused writer and nothing at all, so no failure rate is acceptable. An
+appeal that silently doesn't land is worse than having no appeal button.
+This one is tested by hand, since `run_eval.py` only sends submissions.
+
+---
+
+## 5. Bad input never crashes the service and never goes unrecorded
+
+Send these 10 requests:
+
+- no `text` field
+- `"text": ""`
+- whitespace-only text
+- `"text": null`
+- `"text": 42`
+- a 19-word text
+- 50,000 words of text
+- a body that's a JSON list
+- a body that isn't JSON at all
+- a body over 10 MB
+
+In every trial, each one gets a **4xx with a JSON error naming the problem,
+never a 5xx**, and leaves a `rejected` entry in the audit log.
+
+**Why this target:** A crash on malformed input is one of the most common real
+failures, and unit 8's attack set will send all of these. The log half matters
+as much as the status code: a refusal that leaves no trace makes a flood of bad
+requests look like a quiet afternoon.
 
 ---
 
