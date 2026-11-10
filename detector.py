@@ -127,8 +127,15 @@ def model_signal(text: str) -> float:
     """
     ppl = perplexity(text)
 
-    midpoint = 45.0    # perplexity that scores 0.5
-    steepness = 1.6    # how sharply the score moves either side of it
+    # Moved in Milestone 4 — README.md → "Signals and Scoring". At the starter's
+    # 45, every human passage in the calibration set (perplexity 24–35) scored
+    # above 0.5: the midpoint sat INSIDE ordinary human prose rather than
+    # between human and machine text, so this signal leaned "AI" on everything.
+    # 30 sits between the AI texts (18–22) and most human ones (29–35). Those
+    # groups are only ~1.5x apart, too close for the starter's 1.6 slope to
+    # separate, hence 2.5.
+    midpoint = 30.0    # perplexity that scores 0.5      (starter: 45.0)
+    steepness = 2.5    # how sharply the score moves     (starter: 1.6)
 
     # Logistic on log-perplexity. Low perplexity -> high AI score.
     score = 1.0 / (1.0 + (ppl / midpoint) ** steepness)

@@ -9,7 +9,8 @@ Three measures, each on its own scale:
     sentence_length_spread   do sentences vary in length, or march in step?
                              coefficient of variation; HIGHER = more human
     type_token_ratio         how much of the vocabulary repeats?
-                             moving-average ratio, 0–1; HIGHER = more varied
+                             moving-average ratio, 0–1; HIGHER = more MACHINE-like
+                             (see below: the calibration texts ran this way)
     punctuation_density      how much punctuation beyond commas and full stops?
                              marks per 100 words; HIGHER = more human
 
@@ -17,9 +18,17 @@ Three measures, each on its own scale:
 ramp between two anchors, and averages them into `style_signal`.
 
 Why these might differ between human and AI writing: generated prose tends
-toward even, mid-length sentences and a narrower band of vocabulary, because
-that's what "most likely next word" produces on average. Human writing is
-lumpier — a three-word sentence next to a forty-word one.
+toward even, mid-length sentences and tidy punctuation, because that's what
+"most likely next word" produces on average. Human writing is lumpier — a
+three-word sentence next to a forty-word one, a dash, a question.
+
+Vocabulary is the surprise. The brief's guess was that AI text has a narrower
+vocabulary. On the Milestone 4 calibration texts it was the other way round:
+the AI paragraphs scored 0.83–0.89 and the human passages 0.78–0.79, matching
+published comparisons of ChatGPT and student essays. So the ramp runs the
+other way — and that also means a plain writer with a small, repeated
+vocabulary scores HUMAN here, instead of being accused by this measure on top
+of signal one.
 
 ⚠️ **The blind spot.**
 
@@ -104,7 +113,8 @@ def type_token_ratio(text: str) -> float:
     which runs a little high; that errs toward human, the safe direction.
 
     Returns:
-        A float between 0 and 1. HIGHER = MORE VARIED VOCABULARY.
+        A float between 0 and 1. HIGHER = MORE VARIED VOCABULARY, which the
+        calibration found to be MORE MACHINE-LIKE (see the module docstring).
         0.0 for text with no words.
     """
     tokens = words(text)
@@ -158,11 +168,18 @@ def punctuation_density(text: str) -> float:
 # that run "higher = more human" and puts all three on one scale, so no
 # measure wins just by having bigger raw numbers.
 #
-# The anchors are set in Milestone 4 — README.md → "Signals and Scoring".
+# Set in Milestone 4 from the calibration texts — README.md → "Signals and
+# Scoring" has the table:
+#   spread  AI 0.37–0.50, human 0.43–0.70. The weakest of the three; kept at
+#           the starting anchors.
+#   vocab   AI 0.83–0.89, human 0.78–0.79. FLIPPED from the starting
+#           (0.65, 0.85), which ran backwards on every text.
+#   punct   AI 0.0 on all three, human 1.7–3.0. Human-like end lowered from
+#           6.0 to 4.0, so real human punctuation reads as human.
 
 SPREAD_ANCHORS = (0.25, 0.75)
-VOCAB_ANCHORS = (0.65, 0.85)
-PUNCT_ANCHORS = (0.0, 6.0)
+VOCAB_ANCHORS = (0.88, 0.74)
+PUNCT_ANCHORS = (0.0, 4.0)
 
 MEASURE_WEIGHTS = {"spread": 1.0, "vocab": 1.0, "punct": 1.0}
 

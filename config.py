@@ -100,11 +100,16 @@ DISAGREEMENT_PULL = 0.8
 # getting through. There is no setting that avoids the trade — only settings
 # that decide who pays for it.
 #
-# The AI threshold sits further from 0.5 than the human one on purpose:
-# calling a real writer's work AI costs them far more than missing some AI
-# text costs anyone else.
+# The AI threshold sits twice as far from 0.5 as the human one (0.20 against
+# 0.10) on purpose: calling a real writer's work AI costs them far more than
+# missing some AI text costs anyone else.
+#
+# Set in Milestone 5. HUMAN_THRESHOLD started at 0.35; on the calibration
+# texts no human passage could reach it, because signal one leans AI on
+# plain prose and the disagreement pull keeps a lone signal from going far.
+# 0.40 makes the human label reachable without moving the AI side at all.
 
-HUMAN_THRESHOLD = 0.35
+HUMAN_THRESHOLD = 0.40
 AI_THRESHOLD = 0.70
 
 # The disagreement pull means the AI label is only reachable when BOTH signals
