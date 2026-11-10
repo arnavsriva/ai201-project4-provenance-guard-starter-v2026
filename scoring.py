@@ -66,27 +66,34 @@ def combine_signals(model_score: float, style_score: float) -> float:
 
 
 # ── What a reader sees ───────────────────────────────────────────────────────
-# Written for someone who has never heard the word "threshold". The reader may
-# be the writer, so none of them says "you".
+# Written for someone who has never heard the word "threshold". Each label
+# talks about the piece, not the person; only the last sentence of the unsure
+# and AI labels speaks to the writer, to say what they can do.
+#
+# Second draft. A first draft was read back "as the writer" (README.md → Label
+# Variants). The unsure label felt like "a small cloud with no way to clear
+# it", so it now offers a review. The AI label read as "you cheated", so it now
+# attributes the claim to the checks, says it isn't proof, and says an appeal
+# needs only the writer's own words.
 
 LABEL_HUMAN = (
-    "We think a person wrote this. Our automated checks found its wording and "
-    "its sentence patterns typical of human writing."
+    "We think a person wrote this. Our automated checks found that its wording "
+    "and the shape of its sentences look like human writing."
 )
 
 LABEL_UNSURE = (
-    "Our automated checks couldn't tell whether this was written by a person "
-    "or by AI. Their results were mixed or in the middle, which is common for "
-    "genuine human writing, especially short or plainly worded pieces. This "
-    "label is not a finding that AI was used."
+    "Our automated checks couldn't tell either way on this piece. That's "
+    "common with genuine human writing, especially short or plainly worded "
+    "pieces, and it isn't an accusation. If you wrote this and want a person "
+    "to confirm it, you can ask for a review."
 )
 
 LABEL_AI = (
-    "This looks likely to be AI-generated: our two automated checks, of how "
-    "predictable the wording is and how uniform the sentences are, both point "
-    "that way. They can be wrong, most often on plain or second-language "
-    "writing. If you wrote this yourself, you can appeal and a person will "
-    "review it."
+    "Our automated checks rate this as likely AI-generated: both its wording "
+    "and the shape of its sentences point that way. These checks are sometimes "
+    "wrong, most often on plain or second-language writing, so this is not "
+    "proof. If you wrote it yourself, you can appeal in your own words and a "
+    "person will review it."
 )
 
 
