@@ -12,12 +12,18 @@ good. That's what calibration and unit 8's attack set are for.
 
 import json
 import math
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 BUILD = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
 sys.path.insert(0, str(BUILD))
+
+# These checks send dozens of requests as one creator on purpose, so the rate
+# limiter is switched off for this run only. `run_attacks.py --flood` is the
+# check that the limiter works.
+os.environ["AI201_RATE_LIMITS"] = "0"
 
 import config  # noqa: E402
 
